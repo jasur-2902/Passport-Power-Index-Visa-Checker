@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { Plus, X, Search, UserPlus, ShieldCheck } from 'lucide-react';
 import { countries, countryByCode } from '../data/countries';
 import {
@@ -75,6 +76,41 @@ const TRAVELER_COLORS = [
   { gradient: 'from-emerald-500 to-teal-500', ring: 'ring-emerald-200' },
 ];
 
+/** Hook to track trigger button position for anchored dropdown */
+function useAnchorPosition(isOpen: boolean) {
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const [pos, setPos] = useState<{ top: number; left: number; width: number } | null>(null);
+
+  useEffect(() => {
+    if (!isOpen || !triggerRef.current) { setPos(null); return; }
+    const update = () => {
+      if (!triggerRef.current) return;
+      const rect = triggerRef.current.getBoundingClientRect();
+      setPos({ top: rect.bottom + 4, left: rect.left, width: Math.max(320, rect.width) });
+    };
+    update();
+    window.addEventListener('scroll', update, true);
+    window.addEventListener('resize', update);
+    return () => {
+      window.removeEventListener('scroll', update, true);
+      window.removeEventListener('resize', update);
+    };
+  }, [isOpen]);
+
+  return { triggerRef, pos };
+}
+
+const SM_BREAKPOINT = 640;
+function useIsMobile() {
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth < SM_BREAKPOINT);
+  useEffect(() => {
+    const handler = () => setIsMobile(window.innerWidth < SM_BREAKPOINT);
+    window.addEventListener('resize', handler);
+    return () => window.removeEventListener('resize', handler);
+  }, []);
+  return isMobile;
+}
+
 function TravelerCard({
   traveler,
   index,
@@ -95,8 +131,11 @@ function TravelerCard({
   const [search, setSearch] = useState('');
   const [highlightIndex, setHighlightIndex] = useState(0);
   const searchRef = useRef<HTMLInputElement>(null);
-  const dropdownRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
+  const dropdownPanelRef = useRef<HTMLDivElement>(null);
+
+  const { triggerRef: passportTriggerRef, pos: passportPos } = useAnchorPosition(isSearchOpen);
+  const isMobile = useIsMobile();
 
   const filteredCountries = countries.filter(c =>
     (c.name.toLowerCase().includes(search.toLowerCase()) ||
@@ -110,19 +149,20 @@ function TravelerCard({
     setHighlightIndex(0);
   }, []);
 
-  // Passport dropdown effects
   useEffect(() => {
     if (isSearchOpen && searchRef.current) searchRef.current.focus();
   }, [isSearchOpen]);
 
+  // Close on outside click (for portal)
   useEffect(() => {
+    if (!isSearchOpen) return;
     const handleClick = (e: MouseEvent) => {
-      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) closeSearch();
+      if (dropdownPanelRef.current && !dropdownPanelRef.current.contains(e.target as Node)) {
+        closeSearch();
+      }
     };
-    if (isSearchOpen) {
-      document.addEventListener('mousedown', handleClick);
-      return () => document.removeEventListener('mousedown', handleClick);
-    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
   }, [isSearchOpen, closeSearch]);
 
   const addPassport = useCallback((code: string) => {
@@ -134,7 +174,6 @@ function TravelerCard({
     onUpdate({ passports: traveler.passports.filter(p => p !== code) });
   }, [traveler.passports, onUpdate]);
 
-  // Visa management callbacks
   const addVisa = useCallback((typeId: string) => {
     if (!traveler.visaHoldings.includes(typeId)) {
       onUpdate({ visaHoldings: [...traveler.visaHoldings, typeId] });
@@ -175,8 +214,16 @@ function TravelerCard({
   const { gradient } = TRAVELER_COLORS[index % TRAVELER_COLORS.length];
   const isEmpty = traveler.passports.length === 0;
 
+  // Compute anchored position for desktop dropdown
+  const passportDropdownStyle = (!isMobile && passportPos) ? (() => {
+    const maxW = 360;
+    const left = Math.min(passportPos.left, window.innerWidth - maxW - 16);
+    const maxH = window.innerHeight - passportPos.top - 16;
+    return { top: passportPos.top, left: Math.max(8, left), width: maxW, maxHeight: Math.min(maxH, 400) } as React.CSSProperties;
+  })() : undefined;
+
   return (
-    <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-100 dark:border-slate-700 animate-fade-in-scale relative z-10">
+    <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-sm border border-slate-100 dark:border-slate-700 animate-fade-in-scale relative">
       {/* Colored header bar */}
       <div className={`bg-gradient-to-r ${gradient} px-4 sm:px-5 py-3 flex items-center justify-between rounded-t-2xl`}>
         <label className="sr-only" htmlFor={`traveler-name-${traveler.id}`}>
@@ -230,23 +277,39 @@ function TravelerCard({
           })}
 
           {/* Add passport trigger */}
-          <div className="relative" ref={dropdownRef}>
-            {!isSearchOpen ? (
-              <button
-                onClick={() => setIsSearchOpen(true)}
-                aria-label={isEmpty ? 'Select a passport' : 'Add another passport'}
-                aria-haspopup="listbox"
-                className="inline-flex items-center gap-1.5 bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 rounded-full px-3.5 py-2 text-sm font-medium hover:bg-blue-100 dark:hover:bg-blue-500/20 transition-colors press-effect"
-              >
-                <Plus className="w-4 h-4" />
-                {isEmpty ? 'Select Passport' : 'Add'}
-              </button>
-            ) : (
+          <button
+            ref={passportTriggerRef}
+            onClick={() => setIsSearchOpen(true)}
+            aria-label={isEmpty ? 'Select a passport' : 'Add another passport'}
+            aria-haspopup="listbox"
+            className={`inline-flex items-center gap-1.5 bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 rounded-full px-3.5 py-2 text-sm font-medium hover:bg-blue-100 dark:hover:bg-blue-500/20 transition-colors press-effect ${isSearchOpen ? 'ring-2 ring-blue-300 dark:ring-blue-500' : ''}`}
+          >
+            <Plus className="w-4 h-4" />
+            {isEmpty ? 'Select Passport' : 'Add'}
+          </button>
+
+          {/* Passport search dropdown (portal) */}
+          {isSearchOpen && createPortal(
+            <>
+              {/* Backdrop: visible on mobile, transparent on desktop */}
+              <div className="fixed inset-0 z-[99] bg-black/30 sm:bg-transparent" onClick={closeSearch} />
               <div
-                className="absolute z-50 top-0 left-0 w-[min(320px,calc(100vw-48px))] bg-white dark:bg-slate-800 rounded-xl shadow-xl border border-slate-200 dark:border-slate-700 overflow-hidden animate-fade-in-scale"
+                ref={dropdownPanelRef}
                 role="combobox"
                 aria-expanded="true"
+                className={`fixed z-[100] bg-white dark:bg-slate-800 shadow-xl border border-slate-200 dark:border-slate-700 overflow-hidden animate-fade-in-scale flex flex-col ${
+                  isMobile
+                    ? 'inset-x-0 bottom-0 rounded-t-xl max-h-[75vh]'
+                    : 'rounded-xl'
+                }`}
+                style={passportDropdownStyle}
               >
+                {/* Drag handle for mobile */}
+                {isMobile && (
+                  <div className="flex justify-center pt-2 pb-1">
+                    <div className="w-10 h-1 rounded-full bg-slate-300 dark:bg-slate-600" />
+                  </div>
+                )}
                 <div className="flex items-center gap-2 px-3.5 py-2.5 border-b border-slate-100 dark:border-slate-700">
                   <Search className="w-4 h-4 text-slate-400 flex-shrink-0" />
                   <input
@@ -268,7 +331,7 @@ function TravelerCard({
                     <X className="w-4 h-4" />
                   </button>
                 </div>
-                <div ref={listRef} role="listbox" className="max-h-64 overflow-y-auto overscroll-contain">
+                <div ref={listRef} role="listbox" className="flex-1 overflow-y-auto overscroll-contain">
                   {filteredCountries.slice(0, 50).map((country, i) => (
                     <button
                       key={country.code}
@@ -291,8 +354,9 @@ function TravelerCard({
                   )}
                 </div>
               </div>
-            )}
-          </div>
+            </>,
+            document.body
+          )}
         </div>
 
         {/* Popular passports for empty state */}
@@ -347,8 +411,11 @@ function VisaSection({
   const [visaSearch, setVisaSearch] = useState('');
   const [visaHighlight, setVisaHighlight] = useState(0);
   const visaSearchRef = useRef<HTMLInputElement>(null);
-  const visaDropdownRef = useRef<HTMLDivElement>(null);
   const visaListRef = useRef<HTMLDivElement>(null);
+  const visaPanelRef = useRef<HTMLDivElement>(null);
+
+  const { triggerRef: visaTriggerRef, pos: visaPos } = useAnchorPosition(isVisaSearchOpen);
+  const isMobile = useIsMobile();
 
   const heldVisaIds = new Set(visaHoldings);
   const filteredVisas = visaHoldingTypes.filter(t =>
@@ -368,13 +435,14 @@ function VisaSection({
   }, [isVisaSearchOpen]);
 
   useEffect(() => {
+    if (!isVisaSearchOpen) return;
     const handleClick = (e: MouseEvent) => {
-      if (visaDropdownRef.current && !visaDropdownRef.current.contains(e.target as Node)) closeVisaSearch();
+      if (visaPanelRef.current && !visaPanelRef.current.contains(e.target as Node)) {
+        closeVisaSearch();
+      }
     };
-    if (isVisaSearchOpen) {
-      document.addEventListener('mousedown', handleClick);
-      return () => document.removeEventListener('mousedown', handleClick);
-    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
   }, [isVisaSearchOpen, closeVisaSearch]);
 
   const addVisa = useCallback((id: string) => {
@@ -415,6 +483,14 @@ function VisaSection({
     items: filteredVisas.filter(t => t.category === cat),
   })).filter(g => g.items.length > 0);
 
+  // Compute anchored position for desktop dropdown
+  const visaDropdownStyle = (!isMobile && visaPos) ? (() => {
+    const maxW = 380;
+    const left = Math.min(visaPos.left, window.innerWidth - maxW - 16);
+    const maxH = window.innerHeight - visaPos.top - 16;
+    return { top: visaPos.top, left: Math.max(8, left), width: maxW, maxHeight: Math.min(maxH, 420) } as React.CSSProperties;
+  })() : undefined;
+
   return (
     <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-700">
       <div className="flex items-center gap-1.5 mb-2">
@@ -454,23 +530,37 @@ function VisaSection({
           );
         })}
 
-        <div className="relative" ref={visaDropdownRef}>
-          {!isVisaSearchOpen ? (
-            <button
-              onClick={() => setIsVisaSearchOpen(true)}
-              aria-label="Add a visa or residency"
-              aria-haspopup="listbox"
-              className="inline-flex items-center gap-1.5 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 rounded-full px-3.5 py-2 text-sm font-medium hover:bg-emerald-100 dark:hover:bg-emerald-500/20 transition-colors press-effect"
-            >
-              <Plus className="w-4 h-4" />
-              {visaHoldings.length === 0 ? 'Add Visa / Residency' : 'Add'}
-            </button>
-          ) : (
+        <button
+          ref={visaTriggerRef}
+          onClick={() => setIsVisaSearchOpen(true)}
+          aria-label="Add a visa or residency"
+          aria-haspopup="listbox"
+          className={`inline-flex items-center gap-1.5 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 rounded-full px-3.5 py-2 text-sm font-medium hover:bg-emerald-100 dark:hover:bg-emerald-500/20 transition-colors press-effect ${isVisaSearchOpen ? 'ring-2 ring-emerald-300 dark:ring-emerald-500' : ''}`}
+        >
+          <Plus className="w-4 h-4" />
+          {visaHoldings.length === 0 ? 'Add Visa / Residency' : 'Add'}
+        </button>
+
+        {/* Visa search dropdown (portal) */}
+        {isVisaSearchOpen && createPortal(
+          <>
+            <div className="fixed inset-0 z-[99] bg-black/30 sm:bg-transparent" onClick={closeVisaSearch} />
             <div
-              className="absolute z-50 top-0 left-0 w-[min(360px,calc(100vw-48px))] bg-white dark:bg-slate-800 rounded-xl shadow-xl border border-slate-200 dark:border-slate-700 overflow-hidden animate-fade-in-scale"
+              ref={visaPanelRef}
               role="combobox"
               aria-expanded="true"
+              className={`fixed z-[100] bg-white dark:bg-slate-800 shadow-xl border border-slate-200 dark:border-slate-700 overflow-hidden animate-fade-in-scale flex flex-col ${
+                isMobile
+                  ? 'inset-x-0 bottom-0 rounded-t-xl max-h-[75vh]'
+                  : 'rounded-xl'
+              }`}
+              style={visaDropdownStyle}
             >
+              {isMobile && (
+                <div className="flex justify-center pt-2 pb-1">
+                  <div className="w-10 h-1 rounded-full bg-slate-300 dark:bg-slate-600" />
+                </div>
+              )}
               <div className="flex items-center gap-2 px-3.5 py-2.5 border-b border-slate-100 dark:border-slate-700">
                 <Search className="w-4 h-4 text-slate-400 flex-shrink-0" />
                 <input
@@ -493,7 +583,7 @@ function VisaSection({
                 </button>
               </div>
 
-              <div ref={visaListRef} className="max-h-72 overflow-y-auto overscroll-contain" role="listbox">
+              <div ref={visaListRef} className="flex-1 overflow-y-auto overscroll-contain" role="listbox">
                 {visaSearch ? (
                   filteredVisas.map((type, i) => (
                     <button
@@ -548,8 +638,9 @@ function VisaSection({
                 )}
               </div>
             </div>
-          )}
-        </div>
+          </>,
+          document.body
+        )}
       </div>
 
       {visaHoldings.length === 0 && !isVisaSearchOpen && (

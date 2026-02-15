@@ -33,16 +33,25 @@ function categorize(raw: string): { category: VisaCategory; days?: number } {
   return { category: 'visa-required' };
 }
 
+// Cache: passport code → results (static data never changes)
+const visaResultsCache = new Map<string, VisaResult[]>();
+
 export function getVisaResults(passportCode: string): VisaResult[] {
+  const cached = visaResultsCache.get(passportCode);
+  if (cached) return cached;
+
   const passportData = data[passportCode];
   if (!passportData) return [];
 
-  return Object.entries(passportData)
+  const results = Object.entries(passportData)
     .map(([dest, raw]) => {
       const { category, days } = categorize(raw);
       return { destination: dest, category, days, raw };
     })
     .filter(r => r.category !== 'self' && countryByCode[r.destination]);
+
+  visaResultsCache.set(passportCode, results);
+  return results;
 }
 
 // Priority order for "worst case" logic (lower = better access)
@@ -56,8 +65,16 @@ const categoryPriority: Record<VisaCategory, number> = {
   'self': 6,
 };
 
+// Cache: sorted passport codes key → group results
+const groupResultsCache = new Map<string, GroupResult[]>();
+
 export function getGroupResults(passportCodes: string[]): GroupResult[] {
   if (passportCodes.length === 0) return [];
+
+  const cacheKey = [...passportCodes].sort().join(',');
+  const cached = groupResultsCache.get(cacheKey);
+  if (cached) return cached;
+
   if (passportCodes.length === 1) {
     return getVisaResults(passportCodes[0]).map(r => ({
       destination: r.destination,
@@ -120,6 +137,7 @@ export function getGroupResults(passportCodes: string[]): GroupResult[] {
     });
   });
 
+  groupResultsCache.set(cacheKey, groupResults);
   return groupResults;
 }
 
